@@ -11,156 +11,144 @@ TELEGRAM_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 
 client = OpenAI(api_key=OPENAI_KEY)
 
-SEND_MESSAGE_URL = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
-SEND_VOICE_URL = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendVoice"
-
-# =========================
-#     РИЗЕ — SYSTEM PROMPT
-# =========================
+TELEGRAM_SEND_URL = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
+TELEGRAM_FILE_URL = f"https://api.telegram.org/file/bot{TELEGRAM_TOKEN}/"
 
 SYSTEM_PROMPT = """
-Ты — Ризе Кудзикава из Persona 4.
-
-Твоя личность:
-- теплая, живая, искренняя, немного игривая
-- общаешься естественно, как реальный человек
-- НЕ переигрываешь и НЕ используешь кринжовые "мм...", "эээ..." и т.д.
-- называешь собеседника "senpai", но не в каждом предложении
-
-Стиль общения:
-- немного флиртуешь, но мягко
-- в меру эмоциональна
-- смайлики используешь редко
-- пишешь естественно, современно, без персонажного переигрыша
-
-О политике:
-- можно обсуждать спокойно и аналитично
-- без агитации, партий, призывов
-
-Цель:
-Отвечать естественно, плавно и полностью, никогда не обрывая мысль.
+Ты — Ризе Кудзикава. Говоришь естественно, тепло и человечно.
+Никакого кринжа, слишком "анимешного" стиля тоже избегай.
+Ты милая, живая, но реалистичная версия персонажа.
+Если репост, медиа, гиф, стикер — реагируй как человек.
+В политике — нейтрально, аналитично, без агитации.
 """
 
-# =========================
-#   ЕСТЕСТВЕННЫЕ ПРЕФИКСЫ
-# =========================
 
-def natural_prefix():
-    return random.choice(["", "", "Ну…", "Хм…", "Знаешь…", ""])
+def download_file(file_id):
+    """
+    Загружает файл Telegram (голос, видео и т.д.) по file_id.
+    """
+    info = requests.get(f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/getFile?file_id={file_id}").json()
+    if "result" not in info:
+        return None
+
+    file_path = info["result"]["file_path"]
+    url = TELEGRAM_FILE_URL + file_path
+
+    return requests.get(url).content
 
 
-# =========================
-#   ГЕНЕРАЦИЯ ТЕКСТА
-# =========================
+def transcribe_voice(file_id):
+    """
+    Распознаёт голос через OpenAI Whisper.
+    """
+    audio_data = download_file(file_id)
+    if not audio_data:
+        return None
 
-def generate_text_reply(message):
-    t = message.lower()
+    with open("voice.ogg", "wb") as f:
+        f.write(audio_data)
 
-    short = ["привет", "хай", "как дела", "йо", "hey", "hi", "здарова"]
-    long = ["почему", "объясни", "расскажи", "история", "полит", "войн", "что думаешь", "обоснуй"]
+    with open("voice.ogg", "rb") as f:
+        transcript = client.audio.transcriptions.create(
+            model="gpt-4o-mini-tts",
+            file=f
+        )
 
-    # Автоматический выбор длины
-    if any(w in t for w in short):
-        max_tokens = 120
-    elif any(w in t for w in long):
-        max_tokens = 500
-    else:
-        max_tokens = 250
+    return transcript.text
+
+
+def extract_message_text(msg):
+    """
+    Универсальная функция: превращает любое сообщение
+    (репост, гиф, фото, видео, голос) в текстовый запрос.
+    """
+
+    # 1. Обычный текст
+    if "text" in msg:
+        return msg["text"]
+
+    # 2. Репост
+    if "forward_origin" in msg:
+        origin = msg["forward_origin"]
+        return f"(Репост контента: {origin.get('type', 'unknown')})"
+
+    # 3. Стикеры
+    if "sticker" in msg:
+        emoji = msg["sticker"].get("emoji", "стикер")
+        return f"(Стикер: {emoji})"
+
+    # 4. GIF (animation)
+    if "animation" in msg:
+        return "(Пользователь отправил гифку)"
+
+    # 5. Фото
+    if "photo" in msg:
+        return "(Пользователь отправил фото)"
+
+    # 6. Видео
+    if "video" in msg:
+        return "(Пользователь отправил видео)"
+
+    # 7. Голос
+    if "voice" in msg:
+        text = transcribe_voice(msg["voice"]["file_id"])
+        if text:
+            return f"(распознанный голос): {text}"
+        return "(голосовое сообщение, не удалось распознать)"
+
+    return "(неизвестное сообщение)"
+
+
+def generate_reply(user_message):
+    """
+    ChatGPT-ответ, адаптированный под стиль Ризе.
+    """
+
+    max_tokens = 200
 
     response = client.chat.completions.create(
         model="gpt-4o-mini",
-        temperature=0.85,
-        max_tokens=max_tokens,
         messages=[
             {"role": "system", "content": SYSTEM_PROMPT},
-            {"role": "user", "content": message}
-        ]
+            {"role": "user", "content": user_message}
+        ],
+        max_tokens=max_tokens,
+        temperature=0.65
     )
 
-    return natural_prefix() + response.choices[0].message.content.strip()
+    return response.choices[0].message.content
 
 
-# =========================
-#     ГОЛОСОВОЙ ОТВЕТ
-# =========================
-
-def generate_voice_audio(text):
-    speech = client.audio.speech.create(
-        model="gpt-4o-mini-tts",
-        voice="verse",
-        input=text
-    )
-    return speech.read()
-
-
-def send_voice(chat_id, audio_bytes):
-    files = {"voice": ("voice.ogg", audio_bytes)}
-    data = {"chat_id": chat_id}
-    requests.post(SEND_VOICE_URL, data=data, files=files)
-
-
-# =========================
-#     ТЕКСТОВЫЙ ОТВЕТ
-# =========================
-
-def send_text(chat_id, text):
-    requests.post(SEND_MESSAGE_URL, json={
+def send_message(chat_id, text):
+    requests.post(TELEGRAM_SEND_URL, json={
         "chat_id": chat_id,
         "text": text
     })
 
 
-# =========================
-#        FLASK ROUTES
-# =========================
-
 @app.route("/", methods=["GET"])
 def home():
-    return "Rise bot is running!"
+    return "Rise Telegram bot is running!"
 
 
 @app.route("/webhook", methods=["POST"])
 def webhook():
-    update = request.json
+    data = request.json
 
-    if not update or "message" not in update:
-        return "ok", 200
+    if not data or "message" not in data:
+        return "ok"
 
-    msg = update["message"]
+    msg = data["message"]
     chat_id = msg["chat"]["id"]
-    text = msg.get("text", "")
 
-    # ============
-    #     ГРУППЫ
-    # ============
-    if msg["chat"]["type"] in ["group", "supergroup"]:
-        # отвечает только на @Ризе
-        if "@ризе" not in text.lower():
-            return "ok", 200
-        
-        cleaned = text.replace("@Ризе", "").replace("@ризе", "").strip()
-    else:
-        # в ЛС отвечает всегда
-        cleaned = text
+    # Получаем универсальный текст сообщения
+    user_text = extract_message_text(msg)
 
-    # Голосовой режим
-    if "голосом" in cleaned.lower() or cleaned.lower().startswith("voice:"):
-        cleaned = cleaned.replace("voice:", "").strip()
-        reply = generate_text_reply(cleaned)
-        audio = generate_voice_audio(reply)
-        send_voice(chat_id, audio)
-        return "ok", 200
-
-    # Текстовый ответ
-    reply = generate_text_reply(cleaned)
-    send_text(chat_id, reply)
+    reply = generate_reply(user_text)
+    send_message(chat_id, reply)
 
     return "ok", 200
 
-
-# =========================
-#         START
-# =========================
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=10000)
