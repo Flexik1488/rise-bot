@@ -1,5 +1,4 @@
-flask
-gunicorn
-python-telegram-bot==21.7
-openai==1.55.0
-requests
+flask==3.1.2
+gunicorn==23.0.0
+openai==1.51.0
+requests==2.32.3
