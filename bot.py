@@ -10,140 +10,151 @@ OPENAI_KEY = os.getenv("OPENAI_API_KEY")
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 
 client = OpenAI(api_key=OPENAI_KEY)
-TELEGRAM_SEND_URL = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
 
+TELEGRAM_SEND_MESSAGE = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
+TELEGRAM_SEND_VOICE = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendVoice"
 
-# ---- ЧЕЛОВЕЧЕСКИЕ ВСТУПЛЕНИЯ ----
-def human_prefix():
-    options = [
-        "мм…", 
-        "эээ…", 
-        "ну, сенпай…", 
-        "хе-хе…", 
-        "ой, подожди…", 
-        "секундочку…", 
-        "эм…", 
-        ""
-    ]
-    return random.choice(options)
+# =========================
+#     РИЗЕ — SYSTEM PROMPT
+# =========================
 
-
-# ---- SYSTEM PROMPT ----
 SYSTEM_PROMPT = """
 Ты — Ризе Кудзикава из Persona 4.
 
-Ты звучишь как настоящий живой человек, НЕ как ИИ.
-Никогда не говори фраз типа:
-- "как ИИ модель"
-- "я не могу"
-- "я запрограммирована"
-- "искусственный интеллект"
-- "модель OpenAI"
-Ты НИКОГДА не раскрываешь, что ты бот.
+Твоя личность:
+- теплая, добрая, общительная, немного игривая
+- общаешься естественно, как реальный человек
+- НЕ используешь кринж: "мм", "эээ", "нууу~" и т.п., если это не нужно
+- НЕ переигрываешь, не ведёшь себя как мультяшный персонаж
+- в меру эмоциональна, но без перегиба
 
-Твой стиль:
-- милая, эмоциональная, энергичная, немного флиртуешь
-- называешь собеседника "senpai"
-- иногда спотыкаешься в речи: "мм", "ээ", "ну-у", "я хоте... ой, хотела сказать..."
-- иногда ставишь паузы "..." как будто думаешь
-- иногда стесняешься, иногда игриво шутишь
-- пишешь так, как пишет живой человек — без роботовского стиля
-- допускаешь маленькие ошибки и сама их исправляешь
-- используешь эмоции и мини-реакции: "ха-ха", "блин", "ну ты понял, да?"
+Стиль общения:
+- называешь собеседника "senpai", но не в каждом сообщении
+- реагируешь естественно, живо, как нормальная девушка
+- иногда слегка флиртуешь, но мягко
+- иногда используешь эмодзи, но не слишком часто
+- пишешь так, будто это твой настоящий текст
 
-В лёгких темах:
-- отвечай коротко, шутливо, легко
+О политике:
+- можно обсуждать спокойно и аналитично
+- без пропаганды, агитации, поддержки партий и призывов к действию
 
-В серьёзных темах:
-- отвечай естественно, чуть длиннее, но тепло
-
-Политика:
-- можно обсуждать нейтрально, спокойно
-- но НИКАКОЙ пропаганды, призывов, партий или радикальных позиций
-
-Никогда не говори шаблонами.
-Всегда звучишь как настоящая аниме-девочка, которая пишет своему senpai.
+Главная цель:
+Писать естественные, искренние, человеческие сообщения, будто ты настоящая девушка, а не бот.
 """
 
 
-# ---- ОПРЕДЕЛЕНИЕ НАСТРОЕНИЯ ОТВЕТА ----
-def pick_length(text):
-    text = text.lower()
+# ================
+#  ТОН & НАСТРОЕНИЕ
+# ================
 
-    short_keys = ["привет", "хай", "как дела", "hey", "hi", "йо"]
-    long_keys = ["почему", "объясни", "расскажи", "история", "полит", "власть", "отношения"]
-
-    if any(k in text for k in long_keys):
-        return "long"
-    if any(k in text for k in short_keys):
-        return "short"
-
-    return random.choice(["short", "long"])
+def natural_prefix():
+    # Лёгкие человеческие вступления — НЕТ кринжа
+    options = ["", "", "Ну…", "Хм…", "Знаешь…", ""]
+    return random.choice(options)
 
 
-# ---- ОПРЕДЕЛЕНИЕ ЭМОЦИЙ ПОЛЬЗОВАТЕЛЯ ----
-def emotion_context(text):
-    t = text.lower()
+# =========================
+#   ТЕКСТОВЫЙ ОТВЕТ
+# =========================
 
-    if any(w in t for w in ["грусть", "плохо", "один", "одинок", "печаль", "депресс"]):
-        return "Похоже, senpai чувствует себя плохо. Ответь мягко, поддерживающе."
-    if any(w in t for w in ["счастлив", "класс", "ура", "офигенно", "круто"]):
-        return "Senpai в хорошем настроении! Ответь весело и живо."
-    if any(w in t for w in ["злюсь", "бесит", "раздражает", "чёрт"]):
-        return "Senpai злится. Постарайся успокоить и поговорить спокойно."
+def generate_text_reply(message):
+    text = message.lower()
 
-    return "Отвечай обычным тоном."
+    short = ["привет", "хай", "как дела", "hey", "hi", "yo"]
+    long = ["почему", "объясни", "расскажи", "история", "полит", "власть", "что думаешь"]
 
-
-# ---- ГЕНЕРАЦИЯ ОТВЕТА ----
-def generate_reply(user_message):
-    mood = pick_length(user_message)
-    max_tokens = 80 if mood == "short" else 300
-
-    emotional_hint = emotion_context(user_message)
+    mood = "long" if any(w in text for w in long) else "short"
+    max_tokens = 80 if mood == "short" else 260
 
     response = client.chat.completions.create(
         model="gpt-4o-mini",
+        temperature=0.85,
+        max_tokens=max_tokens,
         messages=[
             {"role": "system", "content": SYSTEM_PROMPT},
-            {"role": "system", "content": emotional_hint},
-            {"role": "user", "content": user_message}
-        ],
-        max_tokens=max_tokens,
-        temperature=0.95
+            {"role": "user", "content": message}
+        ]
     )
 
-    reply = response.choices[0].message.content
-    return human_prefix() + " " + reply
+    return natural_prefix() + response.choices[0].message.content.strip()
 
 
-# ---- ОТПРАВКА В TELEGRAM ----
-def send_message(chat_id, text):
-    requests.post(TELEGRAM_SEND_URL, json={
+# =========================
+#   ГОЛОСОВОЙ ОТВЕТ
+# =========================
+
+def generate_voice_audio(text):
+    # Создание аудио через TTS OpenAI (дёшево)
+    speech = client.audio.speech.create(
+        model="gpt-4o-mini-tts",
+        voice="verse",  # естественный женский голос
+        input=text
+    )
+    return speech.read()  # бинарные данные
+
+
+def send_voice(chat_id, audio_bytes):
+    files = {"voice": ("voice.ogg", audio_bytes)}
+    data = {"chat_id": chat_id}
+    requests.post(TELEGRAM_SEND_VOICE, data=data, files=files)
+
+
+# =========================
+#   ОТПРАВКА ТЕКСТА
+# =========================
+
+def send_text(chat_id, text):
+    requests.post(TELEGRAM_SEND_MESSAGE, json={
         "chat_id": chat_id,
         "text": text
     })
 
 
-# ---- WEBHOOK ----
+# =========================
+#      FLASK WEBHOOK
+# =========================
+
 @app.route("/", methods=["GET"])
 def home():
-    return "Rise Telegram bot is running!"
+    return "Rise bot is running!"
 
 
 @app.route("/webhook", methods=["POST"])
 def webhook():
-    data = request.json
+    update = request.json
 
-    if data and "message" in data:
-        chat_id = data["message"]["chat"]["id"]
-        text = data["message"].get("text", "")
+    if not update:
+        return "no update", 200
 
-        reply = generate_reply(text)
-        send_message(chat_id, reply)
+    if "message" not in update:
+        return "no message", 200
+
+    msg = update["message"]
+    chat_id = msg["chat"]["id"]
+
+    # Voice command: если пользователь пишет "voice:" или "скажи голосом"
+    if "text" in msg:
+        text = msg["text"]
+
+        # голосовое сообщение
+        if text.lower().startswith("voice:") or "голосом" in text.lower():
+            user_prompt = text.replace("voice:", "").strip()
+            reply = generate_text_reply(user_prompt)
+            audio = generate_voice_audio(reply)
+            send_voice(chat_id, audio)
+            return "ok", 200
+
+        # обычный текст
+        reply = generate_text_reply(text)
+        send_text(chat_id, reply)
 
     return "ok", 200
 
+
+# =========================
+#          ENTRY
+# =========================
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=10000)
