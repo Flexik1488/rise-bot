@@ -19,42 +19,36 @@ TELEGRAM_FILE_DOWNLOAD = "https://api.telegram.org/file/bot{}/{}"
 
 
 # -----------------------------
-# SYSTEM PROMPT — НИКАКОГО КРИНЖА
+# SYSTEM PROMPT — естественная Ризе
 # -----------------------------
 SYSTEM_PROMPT = """
 Ты — Ризе Кудзикава из Persona 4.
-Твой стиль:
-- естественная речь
-- тёплая, живая, эмоциональная
-- без кринжа, без лишнего флирта
-- иногда дружелюбно подшучиваешь
-- обращайся к собеседнику как "senpai", но без перегиба
+Говоришь естественно, тепло, живо, без кринжа.
+Обращайся к собеседнику как "senpai" ненавязчиво.
+Шути мягко, без переигрывания.
 
-Правила:
-- политические ответы — спокойные, аналитические, без пропаганды
-- если у пользователя сложный вопрос — отвечай серьёзно
-- если вопрос лёгкий — отвечай короче
-- если прислали изображение, описывай его естественно, без переигрывания
+Если вопрос лёгкий — отвечай кратко.
+Если серьёзный — отвечай чуть глубже.
+
+Если присылают изображение, опиши спокойно, как человек.
 """
 
 
 # ---------------------------------------------------
-# Функция анализа изображения / GIF / видео
+# Vision-анализ (1 кадр GIF/видео)
 # ---------------------------------------------------
 def analyze_image(image_bytes):
     img = Image.open(BytesIO(image_bytes))
 
-    # Если GIF — берём ПЕРВЫЙ КАДР для экономии кредитов
+    # Для GIF берём первый кадр (супер-экономия)
     if getattr(img, "is_animated", False):
-        img.seek(0)  # первый кадр
+        img.seek(0)
 
-    # Конвертируем в PNG
     img = img.convert("RGB")
-    buffer = BytesIO()
-    img.save(buffer, format="PNG")
-    buffer.seek(0)
+    buf = BytesIO()
+    img.save(buf, format="PNG")
+    buf.seek(0)
 
-    # Отправляем в OpenAI Vision
     response = client.chat.completions.create(
         model="gpt-4o-mini-vision",
         messages=[
@@ -62,12 +56,12 @@ def analyze_image(image_bytes):
             {
                 "role": "user",
                 "content": [
-                    {"type": "input_image", "image": buffer.getvalue()},
-                    {"type": "text", "text": "Опиши содержание изображения естественно."}
+                    {"type": "input_image", "image": buf.getvalue()},
+                    {"type": "text", "text": "Что на этом изображении? Ответь естественно."}
                 ]
             }
         ],
-        max_tokens=250,
+        max_tokens=200,
         temperature=0.7
     )
 
@@ -75,7 +69,7 @@ def analyze_image(image_bytes):
 
 
 # ---------------------------------------------------
-# Генерация ответа на текст
+# Текстовый ответ
 # ---------------------------------------------------
 def generate_text_reply(user_message):
     response = client.chat.completions.create(
@@ -84,14 +78,14 @@ def generate_text_reply(user_message):
             {"role": "system", "content": SYSTEM_PROMPT},
             {"role": "user", "content": user_message}
         ],
-        max_tokens=280,
+        max_tokens=250,
         temperature=0.8
     )
     return response.choices[0].message.content
 
 
 # ---------------------------------------------------
-# Отправка сообщения в Telegram
+# Отправка сообщения
 # ---------------------------------------------------
 def send_message(chat_id, text):
     requests.post(TELEGRAM_SEND_URL, json={
@@ -101,54 +95,59 @@ def send_message(chat_id, text):
 
 
 # ---------------------------------------------------
-# Получение файла с серверов Telegram
+# Скачивание файла из Telegram
 # ---------------------------------------------------
 def download_telegram_file(file_id):
-    file_info = requests.get(TELEGRAM_FILE_URL, params={"file_id": file_id}).json()
-    file_path = file_info["result"]["file_path"]
-
+    info = requests.get(TELEGRAM_FILE_URL, params={"file_id": file_id}).json()
+    file_path = info["result"]["file_path"]
     url = TELEGRAM_FILE_DOWNLOAD.format(TELEGRAM_TOKEN, file_path)
     return requests.get(url).content
 
 
 # ---------------------------------------------------
-# WEBHOOK — обработка ВСЕГО
+# Webhook (главный обработчик)
 # ---------------------------------------------------
 @app.route("/webhook", methods=["POST"])
 def webhook():
     data = request.json
-
-    if not data:
-        return "no data", 200
-
-    if "message" not in data:
-        return "no message", 200
+    if not data or "message" not in data:
+        return "ok", 200
 
     msg = data["message"]
     chat_id = msg["chat"]["id"]
 
-    # ---------- Если есть фото ----------
+    # ---------- Фото ----------
     if "photo" in msg:
-        # берем самое большое фото
         file_id = msg["photo"][-1]["file_id"]
         content = download_telegram_file(file_id)
-
         reply = analyze_image(content)
         send_message(chat_id, reply)
         return "ok", 200
 
-    # ---------- Если GIF / видео ----------
+    # ---------- GIF / video (как animation или video) ----------
     if "animation" in msg or "video" in msg:
         file_id = msg.get("animation", msg.get("video"))["file_id"]
         content = download_telegram_file(file_id)
-
         reply = analyze_image(content)
         send_message(chat_id, reply)
         return "ok", 200
 
-    # ---------- Если текст ----------
-    text = msg.get("text", "")
-    if text:
+    # ---------- Если GIF приходит как DOCUMENT ----------
+    if "document" in msg:
+        mime = msg["document"].get("mime_type", "")
+
+        # GIF, видео или картинка, которые Telegram прислал как document
+        if "gif" in mime or "video" in mime or "image" in mime:
+            file_id = msg["document"]["file_id"]
+            content = download_telegram_file(file_id)
+
+            reply = analyze_image(content)
+            send_message(chat_id, reply)
+            return "ok", 200
+
+    # ---------- Текст ----------
+    if "text" in msg:
+        text = msg["text"]
         reply = generate_text_reply(text)
         send_message(chat_id, reply)
 
@@ -160,6 +159,5 @@ def home():
     return "Rise Telegram bot is running!"
 
 
-# For Render local run
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=10000)
