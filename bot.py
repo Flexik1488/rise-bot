@@ -11,61 +11,36 @@ TELEGRAM_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 
 client = OpenAI(api_key=OPENAI_KEY)
 
-TELEGRAM_SEND_MESSAGE = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
-TELEGRAM_SEND_VOICE = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendVoice"
-
-# =========================
-#     РИЗЕ — SYSTEM PROMPT
-# =========================
+SEND_MESSAGE_URL = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
+SEND_VOICE_URL = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendVoice"
 
 SYSTEM_PROMPT = """
 Ты — Ризе Кудзикава из Persona 4.
 
 Твоя личность:
-- теплая, добрая, общительная, немного игривая
-- общаешься естественно, как реальный человек
-- НЕ используешь кринж: "мм", "эээ", "нууу~" и т.п., если это не нужно
-- НЕ переигрываешь, не ведёшь себя как мультяшный персонаж
-- в меру эмоциональна, но без перегиба
+- естественная, живая, мягкая, немного игривая
+- не переигрываешь, не используешь кринжовые "мм..." и "ээ..."
+- называешь собеседника "senpai", но не в каждом предложении
+- пишешь естественно, как современный человек
 
-Стиль общения:
-- называешь собеседника "senpai", но не в каждом сообщении
-- реагируешь естественно, живо, как нормальная девушка
-- иногда слегка флиртуешь, но мягко
-- иногда используешь эмодзи, но не слишком часто
-- пишешь так, будто это твой настоящий текст
+Стиль:
+- в меру эмоциональная
+- можешь чуть флиртовать, но естественно
+- используешь смайлики редко
 
-О политике:
+Политика:
 - можно обсуждать спокойно и аналитично
-- без пропаганды, агитации, поддержки партий и призывов к действию
-
-Главная цель:
-Писать естественные, искренние, человеческие сообщения, будто ты настоящая девушка, а не бот.
+- без призывов, партий, агитации
 """
 
-
-# ================
-#  ТОН & НАСТРОЕНИЕ
-# ================
-
 def natural_prefix():
-    # Лёгкие человеческие вступления — НЕТ кринжа
-    options = ["", "", "Ну…", "Хм…", "Знаешь…", ""]
-    return random.choice(options)
-
-
-# =========================
-#   ТЕКСТОВЫЙ ОТВЕТ
-# =========================
+    return random.choice(["", "", "Ну…", "Хм…", "Знаешь…", ""])
 
 def generate_text_reply(message):
     text = message.lower()
 
-    short = ["привет", "хай", "как дела", "hey", "hi", "yo"]
-    long = ["почему", "объясни", "расскажи", "история", "полит", "власть", "что думаешь"]
-
-    mood = "long" if any(w in text for w in long) else "short"
-    max_tokens = 80 if mood == "short" else 260
+    long_trigger_words = ["почему", "объясни", "расскажи", "полит", "история"]
+    max_tokens = 260 if any(word in text for word in long_trigger_words) else 80
 
     response = client.chat.completions.create(
         model="gpt-4o-mini",
@@ -79,41 +54,24 @@ def generate_text_reply(message):
 
     return natural_prefix() + response.choices[0].message.content.strip()
 
-
-# =========================
-#   ГОЛОСОВОЙ ОТВЕТ
-# =========================
-
 def generate_voice_audio(text):
-    # Создание аудио через TTS OpenAI (дёшево)
     speech = client.audio.speech.create(
         model="gpt-4o-mini-tts",
-        voice="verse",  # естественный женский голос
+        voice="verse",
         input=text
     )
-    return speech.read()  # бинарные данные
+    return speech.read()
+
+
+def send_text(chat_id, text):
+    requests.post(SEND_MESSAGE_URL, json={"chat_id": chat_id, "text": text})
 
 
 def send_voice(chat_id, audio_bytes):
     files = {"voice": ("voice.ogg", audio_bytes)}
     data = {"chat_id": chat_id}
-    requests.post(TELEGRAM_SEND_VOICE, data=data, files=files)
+    requests.post(SEND_VOICE_URL, data=data, files=files)
 
-
-# =========================
-#   ОТПРАВКА ТЕКСТА
-# =========================
-
-def send_text(chat_id, text):
-    requests.post(TELEGRAM_SEND_MESSAGE, json={
-        "chat_id": chat_id,
-        "text": text
-    })
-
-
-# =========================
-#      FLASK WEBHOOK
-# =========================
 
 @app.route("/", methods=["GET"])
 def home():
@@ -124,37 +82,42 @@ def home():
 def webhook():
     update = request.json
 
-    if not update:
-        return "no update", 200
-
-    if "message" not in update:
-        return "no message", 200
+    if not update or "message" not in update:
+        return "ok", 200
 
     msg = update["message"]
     chat_id = msg["chat"]["id"]
+    text = msg.get("text", "")
 
-    # Voice command: если пользователь пишет "voice:" или "скажи голосом"
-    if "text" in msg:
-        text = msg["text"]
-
-        # голосовое сообщение
-        if text.lower().startswith("voice:") or "голосом" in text.lower():
-            user_prompt = text.replace("voice:", "").strip()
-            reply = generate_text_reply(user_prompt)
-            audio = generate_voice_audio(reply)
-            send_voice(chat_id, audio)
+    # ============
+    # ГРУППЫ
+    # ============
+    if msg["chat"]["type"] in ["group", "supergroup"]:
+        # РЕАГИРУЕТ ТОЛЬКО НА "@Ризе"
+        if "@ризе" not in text.lower():
             return "ok", 200
+        
+        # удаляем упоминание
+        cleaned_text = text.replace("@Ризе", "").replace("@ризе", "").strip()
 
-        # обычный текст
-        reply = generate_text_reply(text)
-        send_text(chat_id, reply)
+    else:
+        # ЛИЧКА — отвечает всегда
+        cleaned_text = text
+
+    # голосовая команда
+    if "голосом" in cleaned_text.lower() or cleaned_text.lower().startswith("voice:"):
+        cleaned_text = cleaned_text.replace("voice:", "").strip()
+        reply = generate_text_reply(cleaned_text)
+        audio = generate_voice_audio(reply)
+        send_voice(chat_id, audio)
+        return "ok", 200
+
+    # обычный текст
+    reply = generate_text_reply(cleaned_text)
+    send_text(chat_id, reply)
 
     return "ok", 200
 
-
-# =========================
-#          ENTRY
-# =========================
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=10000)
