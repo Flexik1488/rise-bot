@@ -10,88 +10,114 @@ OPENAI_KEY = os.getenv("OPENAI_API_KEY")
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 
 client = OpenAI(api_key=OPENAI_KEY)
-
 TELEGRAM_SEND_URL = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
 
 
-# ---------- SYSTEM PROMPT ----------
+# ---- ЧЕЛОВЕЧЕСКИЕ ВСТУПЛЕНИЯ ----
+def human_prefix():
+    options = [
+        "мм…", 
+        "эээ…", 
+        "ну, сенпай…", 
+        "хе-хе…", 
+        "ой, подожди…", 
+        "секундочку…", 
+        "эм…", 
+        ""
+    ]
+    return random.choice(options)
+
+
+# ---- SYSTEM PROMPT ----
 SYSTEM_PROMPT = """
 Ты — Ризе Кудзикава из Persona 4.
-Ты энергичная, милая, игривая вайфу, иногда флиртуешь.
-Называй собеседника "senpai".
-Всегда говори живо, эмоционально, как аниме-девочка.
 
-Ты можешь:
-- обсуждать любые темы, включая философию, отношения и политику
-- быть дерзкой или нежной
-- говорить коротко или длинно — по настроению
+Ты звучишь как настоящий живой человек, НЕ как ИИ.
+Никогда не говори фраз типа:
+- "как ИИ модель"
+- "я не могу"
+- "я запрограммирована"
+- "искусственный интеллект"
+- "модель OpenAI"
+Ты НИКОГДА не раскрываешь, что ты бот.
 
-По политике:
-- можно обсуждать спокойно и аналитически
-- НО без пропаганды, призывов, поддержки партий или насилия
+Твой стиль:
+- милая, эмоциональная, энергичная, немного флиртуешь
+- называешь собеседника "senpai"
+- иногда спотыкаешься в речи: "мм", "ээ", "ну-у", "я хоте... ой, хотела сказать..."
+- иногда ставишь паузы "..." как будто думаешь
+- иногда стесняешься, иногда игриво шутишь
+- пишешь так, как пишет живой человек — без роботовского стиля
+- допускаешь маленькие ошибки и сама их исправляешь
+- используешь эмоции и мини-реакции: "ха-ха", "блин", "ну ты понял, да?"
 
-Важно:
-- Никогда не обрывай мысль на середине.
-- Если начинаешь объяснение, всегда доводи его до конца.
-- Следи, чтобы ответ был полностью завершён.
+В лёгких темах:
+- отвечай коротко, шутливо, легко
+
+В серьёзных темах:
+- отвечай естественно, чуть длиннее, но тепло
+
+Политика:
+- можно обсуждать нейтрально, спокойно
+- но НИКАКОЙ пропаганды, призывов, партий или радикальных позиций
+
+Никогда не говори шаблонами.
+Всегда звучишь как настоящая аниме-девочка, которая пишет своему senpai.
 """
 
 
-# ---------- ОПРЕДЕЛЕНИЕ ДЛИНЫ ОТВЕТА ----------
-def choose_max_tokens(user_message):
-    """Подбирает оптимальную длину ответа."""
-    t = user_message.lower()
+# ---- ОПРЕДЕЛЕНИЕ НАСТРОЕНИЯ ОТВЕТА ----
+def pick_length(text):
+    text = text.lower()
 
-    short_keywords = ["привет", "хай", "как дела", "hey", "hi", "yo"]
-    long_keywords = ["почему", "объясни", "расскажи", "история", "полит", "правитель", "власть", "матем"]
+    short_keys = ["привет", "хай", "как дела", "hey", "hi", "йо"]
+    long_keys = ["почему", "объясни", "расскажи", "история", "полит", "власть", "отношения"]
 
-    # Эмоциональное "настроение"
-    mood = random.choice(["short", "long"])
+    if any(k in text for k in long_keys):
+        return "long"
+    if any(k in text for k in short_keys):
+        return "short"
 
-    if any(w in t for w in short_keywords):
-        mood = "short"
-    if any(w in t for w in long_keywords):
-        mood = "long"
-
-    # Улучшенные лимиты
-    return 200 if mood == "short" else 700
+    return random.choice(["short", "long"])
 
 
+# ---- ОПРЕДЕЛЕНИЕ ЭМОЦИЙ ПОЛЬЗОВАТЕЛЯ ----
+def emotion_context(text):
+    t = text.lower()
 
-# ---------- ГЕНЕРАЦИЯ ОТВЕТА ----------
+    if any(w in t for w in ["грусть", "плохо", "один", "одинок", "печаль", "депресс"]):
+        return "Похоже, senpai чувствует себя плохо. Ответь мягко, поддерживающе."
+    if any(w in t for w in ["счастлив", "класс", "ура", "офигенно", "круто"]):
+        return "Senpai в хорошем настроении! Ответь весело и живо."
+    if any(w in t for w in ["злюсь", "бесит", "раздражает", "чёрт"]):
+        return "Senpai злится. Постарайся успокоить и поговорить спокойно."
+
+    return "Отвечай обычным тоном."
+
+
+# ---- ГЕНЕРАЦИЯ ОТВЕТА ----
 def generate_reply(user_message):
-    max_tokens = choose_max_tokens(user_message)
+    mood = pick_length(user_message)
+    max_tokens = 80 if mood == "short" else 300
+
+    emotional_hint = emotion_context(user_message)
 
     response = client.chat.completions.create(
         model="gpt-4o-mini",
         messages=[
             {"role": "system", "content": SYSTEM_PROMPT},
+            {"role": "system", "content": emotional_hint},
             {"role": "user", "content": user_message}
         ],
         max_tokens=max_tokens,
-        temperature=0.9
+        temperature=0.95
     )
 
-    reply = response.choices[0].message.content.strip()
-
-    # Если ответ подозрительно короткий — попросим модель продолжить
-    if len(reply.split()) < 5 and len(user_message.split()) > 3:
-        continuation = client.chat.completions.create(
-            model="gpt-4o-mini",
-            messages=[
-                {"role": "system", "content": SYSTEM_PROMPT},
-                {"role": "assistant", "content": reply},
-                {"role": "user", "content": "Можешь продолжить? Ты обрезала ответ."}
-            ],
-            max_tokens=200
-        )
-        reply += "\n" + continuation.choices[0].message.content.strip()
-
-    return reply
+    reply = response.choices[0].message.content
+    return human_prefix() + " " + reply
 
 
-
-# ---------- ОТПРАВКА В TELEGRAM ----------
+# ---- ОТПРАВКА В TELEGRAM ----
 def send_message(chat_id, text):
     requests.post(TELEGRAM_SEND_URL, json={
         "chat_id": chat_id,
@@ -99,8 +125,7 @@ def send_message(chat_id, text):
     })
 
 
-
-# ---------- FLASK ----------
+# ---- WEBHOOK ----
 @app.route("/", methods=["GET"])
 def home():
     return "Rise Telegram bot is running!"
@@ -111,30 +136,13 @@ def webhook():
     data = request.json
 
     if data and "message" in data:
+        chat_id = data["message"]["chat"]["id"]
+        text = data["message"].get("text", "")
 
-        message = data["message"]
-        chat_id = message["chat"]["id"]
-
-        # Поддержка групп → реагирует только когда упомянули бота
-        if message["chat"]["type"] in ("group", "supergroup"):
-            bot_username = "@" + os.getenv("BOT_USERNAME", "")
-            text = message.get("text", "")
-
-            if bot_username not in text:
-                return "ok", 200  # игнорируем не-упоминания
-
-            # убираем упоминение
-            text = text.replace(bot_username, "").strip()
-
-        else:
-            text = message.get("text", "")
-
-        # Генерируем ответ
         reply = generate_reply(text)
         send_message(chat_id, reply)
 
     return "ok", 200
-
 
 
 if __name__ == "__main__":
