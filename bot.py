@@ -1,5 +1,4 @@
 import os
-import random
 import requests
 from flask import Flask, request
 from openai import OpenAI
@@ -15,7 +14,7 @@ TELEGRAM_SEND_URL = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
 
 
 # -----------------------------------------------------------
-# SYSTEM PROMPT — естественный стиль без кринжа
+# SYSTEM PROMPT — вставь здесь свой
 # -----------------------------------------------------------
 SYSTEM_PROMPT = """
 Ты — Ризе Кудзикава из Persona 4.
@@ -39,25 +38,50 @@ SYSTEM_PROMPT = """
 Если вопрос простой — отвечай короче.
 Если глубокий — чуть длиннее.
 """
+# -----------------------------------------------------------
+# Память в оперативке (RAM) — последние 5 сообщений
+# -----------------------------------------------------------
+CHAT_CONTEXT = {}
+
+
+def save_message(chat_id, role, content):
+    if chat_id not in CHAT_CONTEXT:
+        CHAT_CONTEXT[chat_id] = []
+
+    CHAT_CONTEXT[chat_id].append({"role": role, "content": content})
+
+    # Храним только последние 5 сообщений
+    CHAT_CONTEXT[chat_id] = CHAT_CONTEXT[chat_id][-5:]
+
+
+def get_chat_history(chat_id):
+    return CHAT_CONTEXT.get(chat_id, [])
 
 
 # -----------------------------------------------------------
-# Генерация текстового ответа
+# Генерация ответа с учётом контекста
 # -----------------------------------------------------------
-def generate_text_reply(prompt):
-    return client.chat.completions.create(
+def generate_text_reply(chat_id, prompt):
+    save_message(chat_id, "user", prompt)
+
+    history = get_chat_history(chat_id)
+
+    messages = [{"role": "system", "content": SYSTEM_PROMPT}] + history
+
+    response = client.chat.completions.create(
         model="gpt-4o-mini",
-        messages=[
-            {"role": "system", "content": SYSTEM_PROMPT},
-            {"role": "user", "content": prompt}
-        ],
+        messages=messages,
         temperature=0.8,
         max_tokens=350
     ).choices[0].message.content
 
+    save_message(chat_id, "assistant", response)
+
+    return response
+
 
 # -----------------------------------------------------------
-# Отправка сообщения
+# Отправка ответа
 # -----------------------------------------------------------
 def send_message(chat_id, text):
     requests.post(TELEGRAM_SEND_URL, json={
@@ -67,7 +91,7 @@ def send_message(chat_id, text):
 
 
 # -----------------------------------------------------------
-# Основной обработчик webhook
+# Обработчик Telegram webhook
 # -----------------------------------------------------------
 @app.route("/webhook", methods=["POST"])
 def webhook():
@@ -80,27 +104,19 @@ def webhook():
     chat_id = chat.get("id")
     chat_type = chat.get("type")
 
-    # Текст сообщения
     text = msg.get("text", "")
 
-    # ----------------------------------------------------------------
-    # 1. Игнорировать ВСЕ МЕДИА, ФОТО, GIF, ДОКУМЕНТЫ
-    # ----------------------------------------------------------------
+    # Игнорируем любые медиа
     if "photo" in msg or "document" in msg or "animation" in msg or "video" in msg or "sticker" in msg:
         return "ok", 200
 
-    # ----------------------------------------------------------------
-    # 2. В группах — отвечать ТОЛЬКО на упоминание бота
-    # ----------------------------------------------------------------
+    # В группах — отвечаем только если есть упоминание @бота
     if chat_type in ["group", "supergroup"]:
         if not text or "@" not in text:
             return "ok", 200
 
-    # ----------------------------------------------------------------
-    # 3. Если это текст — генерируем ответ
-    # ----------------------------------------------------------------
     if text:
-        reply = generate_text_reply(text)
+        reply = generate_text_reply(chat_id, text)
         send_message(chat_id, reply)
 
     return "ok", 200
