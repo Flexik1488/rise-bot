@@ -1,6 +1,8 @@
 import os
 import random
 import requests
+from io import BytesIO
+from PIL import Image
 from flask import Flask, request
 from openai import OpenAI
 
@@ -12,113 +14,85 @@ TELEGRAM_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 client = OpenAI(api_key=OPENAI_KEY)
 
 TELEGRAM_SEND_URL = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
-TELEGRAM_FILE_URL = f"https://api.telegram.org/file/bot{TELEGRAM_TOKEN}/"
+TELEGRAM_FILE_URL = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/getFile"
+TELEGRAM_FILE_DOWNLOAD = "https://api.telegram.org/file/bot{}/{}"
 
+
+# -----------------------------
+# SYSTEM PROMPT — НИКАКОГО КРИНЖА
+# -----------------------------
 SYSTEM_PROMPT = """
-Ты — Ризе Кудзикава. Говоришь естественно, тепло и человечно.
-Никакого кринжа, слишком "анимешного" стиля тоже избегай.
-Ты милая, живая, но реалистичная версия персонажа.
-Если репост, медиа, гиф, стикер — реагируй как человек.
-В политике — нейтрально, аналитично, без агитации.
+Ты — Ризе Кудзикава из Persona 4.
+Твой стиль:
+- естественная речь
+- тёплая, живая, эмоциональная
+- без кринжа, без лишнего флирта
+- иногда дружелюбно подшучиваешь
+- обращайся к собеседнику как "senpai", но без перегиба
+
+Правила:
+- политические ответы — спокойные, аналитические, без пропаганды
+- если у пользователя сложный вопрос — отвечай серьёзно
+- если вопрос лёгкий — отвечай короче
+- если прислали изображение, описывай его естественно, без переигрывания
 """
 
 
-def download_file(file_id):
-    """
-    Загружает файл Telegram (голос, видео и т.д.) по file_id.
-    """
-    info = requests.get(f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/getFile?file_id={file_id}").json()
-    if "result" not in info:
-        return None
+# ---------------------------------------------------
+# Функция анализа изображения / GIF / видео
+# ---------------------------------------------------
+def analyze_image(image_bytes):
+    img = Image.open(BytesIO(image_bytes))
 
-    file_path = info["result"]["file_path"]
-    url = TELEGRAM_FILE_URL + file_path
+    # Если GIF — берём ПЕРВЫЙ КАДР для экономии кредитов
+    if getattr(img, "is_animated", False):
+        img.seek(0)  # первый кадр
 
-    return requests.get(url).content
+    # Конвертируем в PNG
+    img = img.convert("RGB")
+    buffer = BytesIO()
+    img.save(buffer, format="PNG")
+    buffer.seek(0)
 
+    # Отправляем в OpenAI Vision
+    response = client.chat.completions.create(
+        model="gpt-4o-mini-vision",
+        messages=[
+            {"role": "system", "content": SYSTEM_PROMPT},
+            {
+                "role": "user",
+                "content": [
+                    {"type": "input_image", "image": buffer.getvalue()},
+                    {"type": "text", "text": "Опиши содержание изображения естественно."}
+                ]
+            }
+        ],
+        max_tokens=250,
+        temperature=0.7
+    )
 
-def transcribe_voice(file_id):
-    """
-    Распознаёт голос через OpenAI Whisper.
-    """
-    audio_data = download_file(file_id)
-    if not audio_data:
-        return None
-
-    with open("voice.ogg", "wb") as f:
-        f.write(audio_data)
-
-    with open("voice.ogg", "rb") as f:
-        transcript = client.audio.transcriptions.create(
-            model="gpt-4o-mini-tts",
-            file=f
-        )
-
-    return transcript.text
-
-
-def extract_message_text(msg):
-    """
-    Универсальная функция: превращает любое сообщение
-    (репост, гиф, фото, видео, голос) в текстовый запрос.
-    """
-
-    # 1. Обычный текст
-    if "text" in msg:
-        return msg["text"]
-
-    # 2. Репост
-    if "forward_origin" in msg:
-        origin = msg["forward_origin"]
-        return f"(Репост контента: {origin.get('type', 'unknown')})"
-
-    # 3. Стикеры
-    if "sticker" in msg:
-        emoji = msg["sticker"].get("emoji", "стикер")
-        return f"(Стикер: {emoji})"
-
-    # 4. GIF (animation)
-    if "animation" in msg:
-        return "(Пользователь отправил гифку)"
-
-    # 5. Фото
-    if "photo" in msg:
-        return "(Пользователь отправил фото)"
-
-    # 6. Видео
-    if "video" in msg:
-        return "(Пользователь отправил видео)"
-
-    # 7. Голос
-    if "voice" in msg:
-        text = transcribe_voice(msg["voice"]["file_id"])
-        if text:
-            return f"(распознанный голос): {text}"
-        return "(голосовое сообщение, не удалось распознать)"
-
-    return "(неизвестное сообщение)"
+    return response.choices[0].message.content
 
 
-def generate_reply(user_message):
-    """
-    ChatGPT-ответ, адаптированный под стиль Ризе.
-    """
-
-    max_tokens = 200
-
+# ---------------------------------------------------
+# Генерация ответа на текст
+# ---------------------------------------------------
+def generate_text_reply(user_message):
     response = client.chat.completions.create(
         model="gpt-4o-mini",
         messages=[
             {"role": "system", "content": SYSTEM_PROMPT},
             {"role": "user", "content": user_message}
         ],
-        max_tokens=max_tokens,
-        temperature=0.65
+        max_tokens=280,
+        temperature=0.8
     )
-
     return response.choices[0].message.content
 
 
+# ---------------------------------------------------
+# Отправка сообщения в Telegram
+# ---------------------------------------------------
 def send_message(chat_id, text):
     requests.post(TELEGRAM_SEND_URL, json={
         "chat_id": chat_id,
@@ -126,29 +100,66 @@ def send_message(chat_id, text):
     })
 
 
-@app.route("/", methods=["GET"])
-def home():
-    return "Rise Telegram bot is running!"
+# ---------------------------------------------------
+# Получение файла с серверов Telegram
+# ---------------------------------------------------
+def download_telegram_file(file_id):
+    file_info = requests.get(TELEGRAM_FILE_URL, params={"file_id": file_id}).json()
+    file_path = file_info["result"]["file_path"]
+
+    url = TELEGRAM_FILE_DOWNLOAD.format(TELEGRAM_TOKEN, file_path)
+    return requests.get(url).content
 
 
+# ---------------------------------------------------
+# WEBHOOK — обработка ВСЕГО
+# ---------------------------------------------------
 @app.route("/webhook", methods=["POST"])
 def webhook():
     data = request.json
 
-    if not data or "message" not in data:
-        return "ok"
+    if not data:
+        return "no data", 200
+
+    if "message" not in data:
+        return "no message", 200
 
     msg = data["message"]
     chat_id = msg["chat"]["id"]
 
-    # Получаем универсальный текст сообщения
-    user_text = extract_message_text(msg)
+    # ---------- Если есть фото ----------
+    if "photo" in msg:
+        # берем самое большое фото
+        file_id = msg["photo"][-1]["file_id"]
+        content = download_telegram_file(file_id)
 
-    reply = generate_reply(user_text)
-    send_message(chat_id, reply)
+        reply = analyze_image(content)
+        send_message(chat_id, reply)
+        return "ok", 200
+
+    # ---------- Если GIF / видео ----------
+    if "animation" in msg or "video" in msg:
+        file_id = msg.get("animation", msg.get("video"))["file_id"]
+        content = download_telegram_file(file_id)
+
+        reply = analyze_image(content)
+        send_message(chat_id, reply)
+        return "ok", 200
+
+    # ---------- Если текст ----------
+    text = msg.get("text", "")
+    if text:
+        reply = generate_text_reply(text)
+        send_message(chat_id, reply)
 
     return "ok", 200
 
 
+@app.route("/")
+def home():
+    return "Rise Telegram bot is running!"
+
+
+# For Render local run
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=10000)
