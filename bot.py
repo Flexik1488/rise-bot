@@ -1,47 +1,45 @@
 import os
-from flask import Flask, request
-from telegram import Update
-from telegram.ext import Application, MessageHandler, filters, ContextTypes
-from openai import OpenAI
 import random
+import requests
+from flask import Flask, request
+from openai import OpenAI
 
 app = Flask(__name__)
 
-BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
-OPENAI_KEY = os.environ.get("OPENAI_API_KEY")
+OPENAI_KEY = os.getenv("OPENAI_API_KEY")
+TELEGRAM_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 
 client = OpenAI(api_key=OPENAI_KEY)
 
+TELEGRAM_SEND_URL = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
+
 SYSTEM_PROMPT = """
-Ты — Ризе Кудзикава из Persona 4. 
-Твой стиль: энергичная, милая, болтливая, немного флиртующая, всегда дружелюбная. 
-Называй собеседника "senpai". 
-Отвечай эмоционально, живо, по-анимэшному.
+Ты — Ризе Кудзикава из Persona 4.
+Ты энергичная, милая, игривая вайфу, иногда флиртуешь.
+Называй собеседника "senpai".
+Всегда говори живо, эмоционально, как аниме-девочка.
 
 Ты можешь:
-- говорить о любых темах (игры, музыка, отношения, политика, соц. темы и т.п.)
-- обсуждать политические вопросы в нейтральном, спокойном, рассуждающем тоне
-- НО не занимай **пропагандистскую позицию**, не призывай к голосованию, протестам, партиям
-- можно шутить и высказывать мнения персонажа, но не превращать это в агитацию
+- обсуждать любые темы, включая философию, отношения и политику
+- быть дерзкой или нежной
+- говорить коротко или длинно — по настроению
 
-Если вопрос лёгкий → отвечай покороче.
-Если вопрос серьёзный → отвечай длиннее и более вдумчиво.
+По политике:
+- можно обсуждать спокойно и аналитически
+- НО без пропаганды, призывов, поддержки партий или насилия
 """
 
-async def generate_reply(text):
-    # Определяем длину ответа
+def generate_reply(user_message):
     short_triggers = ["привет", "хай", "как дела", "hey", "hi", "yo"]
     long_triggers = ["почему", "объясни", "расскажи", "история", "полит", "правитель", "власть"]
 
-    # Вероятностное "настроение" Ризе
-    mood = random.choice(["short", "long"])
+    mood = random.choice(["short", "long"])  # настроение
 
-    # Ситуативная логика
-    t = text.lower()
+    text_lower = user_message.lower()
 
-    if any(k in t for k in short_triggers):
+    if any(word in text_lower for word in short_triggers):
         mood = "short"
-    if any(k in t for k in long_triggers):
+    if any(word in text_lower for word in long_triggers):
         mood = "long"
 
     max_tokens = 80 if mood == "short" else 300
@@ -50,39 +48,40 @@ async def generate_reply(text):
         model="gpt-4o-mini",
         messages=[
             {"role": "system", "content": SYSTEM_PROMPT},
-            {"role": "user", "content": text}
+            {"role": "user", "content": user_message}
         ],
         max_tokens=max_tokens,
         temperature=0.9
     )
-    
+
     return response.choices[0].message.content
 
 
-async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not update.message:
-        return
-
-    user_text = update.message.text
-    reply = await generate_reply(user_text)
-    await update.message.reply_text(reply)
+def send_message(chat_id, text):
+    requests.post(TELEGRAM_SEND_URL, json={
+        "chat_id": chat_id,
+        "text": text
+    })
 
 
-application = Application.builder().token(BOT_TOKEN).build()
-application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
+@app.route("/", methods=["GET"])
+def home():
+    return "Rise Telegram bot is running!"
 
 
 @app.route("/webhook", methods=["POST"])
 def webhook():
-    update = Update.de_json(request.get_json(force=True), application.bot)
-    application.update_queue.put_nowait(update)
-    return "ok"
+    data = request.json
 
+    if data and "message" in data:
+        chat_id = data["message"]["chat"]["id"]
+        text = data["message"].get("text", "")
 
-@app.route("/")
-def home():
-    return "Bot is online and working!"
+        reply = generate_reply(text)
+        send_message(chat_id, reply)
+
+    return "ok", 200
 
 
 if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=8080)
+    app.run(host="0.0.0.0", port=10000)
